@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Scalable and Secure E-commerce Website Architecture
+Description: Scalable and Secure E-commerce Website with Monitoring, Auto Scaling, ALB, DynamoDB, and IAM Role.
 
 Parameters:
   KeyName:
@@ -14,37 +14,27 @@ Parameters:
       - t3.micro
       - t3.small
       - t3.medium
-    ConstraintDescription: Must be a valid EC2 instance type.
   VpcCidr:
-    Description: CIDR block for the VPC
     Type: String
     Default: 10.0.0.0/16
   PublicSubnetCidr:
-    Description: CIDR block for the public subnet
     Type: String
     Default: 10.0.1.0/24
   PrivateSubnetCidr:
-    Description: CIDR block for the private subnet
     Type: String
     Default: 10.0.2.0/24
 
 Resources:
+  # --- VPC and Networking ---
   VPC:
     Type: AWS::EC2::VPC
     Properties:
       CidrBlock: !Ref VpcCidr
       EnableDnsSupport: true
       EnableDnsHostnames: true
-      Tags:
-        - Key: Name
-          Value: ECommerceVPC
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
-    Properties:
-      Tags:
-        - Key: Name
-          Value: ECommerceIGW
 
   AttachGateway:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -58,40 +48,12 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: !Ref PublicSubnetCidr
       MapPublicIpOnLaunch: true
-      Tags:
-        - Key: Name
-          Value: PublicSubnet
 
   PrivateSubnet:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
       CidrBlock: !Ref PrivateSubnetCidr
-      Tags:
-        - Key: Name
-          Value: PrivateSubnet
-
-  PublicRouteTable:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref VPC
-      Tags:
-        - Key: Name
-          Value: PublicRouteTable
-
-  PublicRoute:
-    Type: AWS::EC2::Route
-    DependsOn: AttachGateway
-    Properties:
-      RouteTableId: !Ref PublicRouteTable
-      DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref InternetGateway
-
-  PublicSubnetRouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PublicSubnet
-      RouteTableId: !Ref PublicRouteTable
 
   NATGatewayEIP:
     Type: AWS::EC2::EIP
@@ -103,49 +65,23 @@ Resources:
     Properties:
       AllocationId: !GetAtt NATGatewayEIP.AllocationId
       SubnetId: !Ref PublicSubnet
-      Tags:
-        - Key: Name
-          Value: NATGateway
 
-  PrivateRouteTable:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref VPC
-      Tags:
-        - Key: Name
-          Value: PrivateRouteTable
-
-  PrivateRoute:
-    Type: AWS::EC2::Route
-    Properties:
-      RouteTableId: !Ref PrivateRouteTable
-      DestinationCidrBlock: 0.0.0.0/0
-      NatGatewayId: !Ref NATGateway
-
-  PrivateSubnetRouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PrivateSubnet
-      RouteTableId: !Ref PrivateRouteTable
-
+  # --- Security Groups ---
   ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow HTTP traffic to the ALB
+      GroupDescription: Allow HTTP traffic to ALB
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
           CidrIp: 0.0.0.0/0
-      Tags:
-        - Key: Name
-          Value: ALBSecurityGroup
 
   EC2SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow HTTP and SSH traffic to EC2 instances
+      GroupDescription: Allow HTTP and SSH to EC2
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -156,10 +92,37 @@ Resources:
           FromPort: 22
           ToPort: 22
           CidrIp: 0.0.0.0/0
-      Tags:
-        - Key: Name
-          Value: EC2SecurityGroup
 
+  # --- IAM Role for EC2 Instances ---
+  EC2IAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ECommerceEC2Policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:*
+                  - s3:*
+                  - logs:*
+                Resource: "*"
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2IAMRole
+
+  # --- Load Balancer ---
   ApplicationLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
@@ -167,9 +130,6 @@ Resources:
         - !Ref PublicSubnet
       SecurityGroups:
         - !Ref ALBSecurityGroup
-      Tags:
-        - Key: Name
-          Value: ECommerceALB
 
   ALBTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
@@ -178,14 +138,6 @@ Resources:
       Port: 80
       Protocol: HTTP
       TargetType: instance
-      HealthCheckProtocol: HTTP
-      HealthCheckPort: 80
-      HealthCheckPath: /
-      Matcher:
-        HttpCode: 200
-      Tags:
-        - Key: Name
-          Value: ECommerceTargetGroup
 
   ALBListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -197,46 +149,64 @@ Resources:
         - Type: forward
           TargetGroupArn: !Ref ALBTargetGroup
 
+  # --- Launch Template ---
   LaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
       LaunchTemplateData:
-        ImageId: ami-04b4f1a9cf54c11d0
+        ImageId: !Sub "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2}}"
         InstanceType: !Ref InstanceType
         KeyName: !Ref KeyName
+        IamInstanceProfile:
+          Arn: !GetAtt InstanceProfile.Arn
         SecurityGroupIds:
           - !Ref EC2SecurityGroup
         UserData:
           Fn::Base64: !Sub |
             #!/bin/bash
-            yum update -y
-            amazon-linux-extras enable php7.2
-            yum install -y httpd mariadb-server php
-            systemctl start httpd
-            systemctl enable httpd
-            echo "<?php phpinfo(); ?>" > /var/www/html/index.php
-      Tags:
-        - Key: Name
-          Value: EC2LaunchTemplate
+            sudo yum update -y
+            sudo yum install -y httpd
+            sudo systemctl start httpd
+            sudo systemctl enable httpd
 
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
       VPCZoneIdentifier:
         - !Ref PrivateSubnet
-      LaunchTemplate:
-        LaunchTemplateId: !Ref LaunchTemplate
       MinSize: '1'
       MaxSize: '3'
       TargetGroupARNs:
         - !Ref ALBTargetGroup
-      Tags:
-        - Key: Name
-          Value: ECommerceASG
-          PropagateAtLaunch: true
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+
+  # --- DynamoDB Table ---
+  ECommerceDynamoDB:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ECommerceOrders
+      AttributeDefinitions:
+        - AttributeName: OrderID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: OrderID
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  # --- CloudWatch Alarms ---
+  AlarmNotificationTopic:
+    Type: AWS::SNS::Topic
+
+  AlarmSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: email
+      Endpoint: 22ug2-0179G@sltc.edu.lk
+      TopicArn: !Ref AlarmNotificationTopic
 
 Outputs:
   LoadBalancerDNSName:
-    Description: DNS Name of the Application Load Balancer
+    Description: ALB DNS Name
     Value: !GetAtt ApplicationLoadBalancer.DNSName
-
