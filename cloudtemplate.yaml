@@ -17,7 +17,7 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: 10.0.1.0/24
       MapPublicIpOnLaunch: true
-      AvailabilityZone: !Select [ 0, !GetAZs ""]
+      AvailabilityZone: !Select [ 0, !GetAZs "" ]
       Tags:
         - Key: Name
           Value: ecom-prod-public-subnet-1
@@ -28,7 +28,7 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: 10.0.2.0/24
       MapPublicIpOnLaunch: true
-      AvailabilityZone: !Select [ 1, !GetAZs ""]
+      AvailabilityZone: !Select [ 1, !GetAZs "" ]
       Tags:
         - Key: Name
           Value: ecom-prod-public-subnet-2
@@ -39,7 +39,7 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: 10.0.3.0/24
       MapPublicIpOnLaunch: false
-      AvailabilityZone: !Select [ 0, !GetAZs ""]
+      AvailabilityZone: !Select [ 0, !GetAZs "" ]
       Tags:
         - Key: Name
           Value: ecom-prod-private-subnet-1
@@ -50,7 +50,7 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: 10.0.4.0/24
       MapPublicIpOnLaunch: false
-      AvailabilityZone: !Select [ 1, !GetAZs ""]
+      AvailabilityZone: !Select [ 1, !GetAZs "" ]
       Tags:
         - Key: Name
           Value: ecom-prod-private-subnet-2
@@ -67,6 +67,26 @@ Resources:
     Properties:
       VpcId: !Ref VPC
       InternetGatewayId: !Ref InternetGateway
+
+  RouteTablePrivate:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: ecom-prod-private-route-table
+
+  RouteTableAssociationPrivate1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref RouteTablePrivate
+
+  RouteTableAssociationPrivate2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref RouteTablePrivate
 
   SecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -88,18 +108,42 @@ Resources:
           ToPort: -1
           CidrIp: 0.0.0.0/0
 
-  EC2Instance:
-    Type: AWS::EC2::Instance
+  IAMRoleForEC2:
+    Type: AWS::IAM::Role
     Properties:
-      InstanceType: t2.micro
-      SecurityGroupIds:
-        - !Ref SecurityGroup
-      SubnetId: !Ref PrivateSubnet1
-      ImageId: ami-0abcdef1234567890
-      KeyName: ecom
-      Tags:
-        - Key: Name
-          Value: ecom-prod-instance
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ "ec2.amazonaws.com" ]
+            Action: [ "sts:AssumeRole" ]
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "dynamodb:*"
+                Resource: "*"
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref IAMRoleForEC2
+
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VPC
+      Protocol: HTTP
+      Port: 80
+      TargetType: instance
+      Targets:
+        - Id: !Ref EC2Instance
+      HealthCheckPath: "/"
 
   ALB:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
@@ -123,16 +167,19 @@ Resources:
         - Type: forward
           TargetGroupArn: !Ref ALBTargetGroup
 
-  ALBTargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+  EC2Instance:
+    Type: AWS::EC2::Instance
     Properties:
-      VpcId: !Ref VPC
-      Protocol: HTTP
-      Port: 80
-      TargetType: instance
-      Targets:
-        - Id: !Ref EC2Instance
-      HealthCheckPath: "/"
+      InstanceType: t2.micro
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      SubnetId: !Ref PrivateSubnet1
+      ImageId: !Sub "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64}}"
+      KeyName: ecom
+      IamInstanceProfile: !Ref InstanceProfile
+      Tags:
+        - Key: Name
+          Value: ecom-prod-instance
 
   DynamoDBTable:
     Type: AWS::DynamoDB::Table
@@ -155,8 +202,7 @@ Resources:
       ServiceName: !Sub "com.amazonaws.${AWS::Region}.dynamodb"
       VpcEndpointType: Gateway
       RouteTableIds:
-        - !Ref PrivateSubnet1
-        - !Ref PrivateSubnet2
+        - !Ref RouteTablePrivate
 
 Outputs:
   ALBURL:
