@@ -1,212 +1,167 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Scalable and Secure E-commerce Website with Monitoring, Auto Scaling, ALB, DynamoDB, and IAM Role.
-
-Parameters:
-  KeyName:
-    Description: Name of an existing EC2 KeyPair to enable SSH access to the instances
-    Type: AWS::EC2::KeyPair::KeyName
-    Default: ecom
-  InstanceType:
-    Description: EC2 instance type
-    Type: String
-    Default: t3.micro
-    AllowedValues:
-      - t3.micro
-      - t3.small
-      - t3.medium
-  VpcCidr:
-    Type: String
-    Default: 10.0.0.0/16
-  PublicSubnetCidr:
-    Type: String
-    Default: 10.0.1.0/24
-  PrivateSubnetCidr:
-    Type: String
-    Default: 10.0.2.0/24
 
 Resources:
-  # --- VPC and Networking ---
   VPC:
     Type: AWS::EC2::VPC
     Properties:
-      CidrBlock: !Ref VpcCidr
+      CidrBlock: 10.0.0.0/16
       EnableDnsSupport: true
       EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: ecom-prod-vpc
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [ 0, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: ecom-prod-public-subnet-1
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [ 1, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: ecom-prod-public-subnet-2
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.3.0/24
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [ 0, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: ecom-prod-private-subnet-1
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.4.0/24
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [ 1, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: ecom-prod-private-subnet-2
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: ecom-prod-igw
 
-  AttachGateway:
+  VPCGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
     Properties:
       VpcId: !Ref VPC
       InternetGatewayId: !Ref InternetGateway
 
-  PublicSubnet:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref VPC
-      CidrBlock: !Ref PublicSubnetCidr
-      MapPublicIpOnLaunch: true
-
-  PrivateSubnet:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref VPC
-      CidrBlock: !Ref PrivateSubnetCidr
-
-  NATGatewayEIP:
-    Type: AWS::EC2::EIP
-    Properties:
-      Domain: vpc
-
-  NATGateway:
-    Type: AWS::EC2::NatGateway
-    Properties:
-      AllocationId: !GetAtt NATGatewayEIP.AllocationId
-      SubnetId: !Ref PublicSubnet
-
-  # --- Security Groups ---
-  ALBSecurityGroup:
+  SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow HTTP traffic to ALB
+      GroupDescription: Allow HTTP and SSH
       VpcId: !Ref VPC
       SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: 0.0.0.0/0
-
-  EC2SecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Allow HTTP and SSH to EC2
-      VpcId: !Ref VPC
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          SourceSecurityGroupId: !Ref ALBSecurityGroup
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
           CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
 
-  # --- IAM Role for EC2 Instances ---
-  EC2IAMRole:
-    Type: AWS::IAM::Role
+  EC2Instance:
+    Type: AWS::EC2::Instance
     Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: ec2.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: ECommerceEC2Policy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - dynamodb:*
-                  - s3:*
-                  - logs:*
-                Resource: "*"
+      InstanceType: t2.micro
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      SubnetId: !Ref PrivateSubnet1
+      ImageId: ami-0abcdef1234567890
+      KeyName: ecom
+      Tags:
+        - Key: Name
+          Value: ecom-prod-instance
 
-  InstanceProfile:
-    Type: AWS::IAM::InstanceProfile
-    Properties:
-      Roles:
-        - !Ref EC2IAMRole
-
-  # --- Load Balancer ---
-  ApplicationLoadBalancer:
+  ALB:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
+      Name: ecom-prod-alb
       Subnets:
-        - !Ref PublicSubnet
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
       SecurityGroups:
-        - !Ref ALBSecurityGroup
+        - !Ref SecurityGroup
+      Type: application
+      Scheme: internet-facing
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
 
   ALBTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
       VpcId: !Ref VPC
-      Port: 80
       Protocol: HTTP
+      Port: 80
       TargetType: instance
+      Targets:
+        - Id: !Ref EC2Instance
+      HealthCheckPath: "/"
 
-  ALBListener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    Properties:
-      LoadBalancerArn: !Ref ApplicationLoadBalancer
-      Port: 80
-      Protocol: HTTP
-      DefaultActions:
-        - Type: forward
-          TargetGroupArn: !Ref ALBTargetGroup
-
-  # --- Launch Template ---
-  LaunchTemplate:
-    Type: AWS::EC2::LaunchTemplate
-    Properties:
-      LaunchTemplateData:
-        ImageId: !Sub "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2}}"
-        InstanceType: !Ref InstanceType
-        KeyName: !Ref KeyName
-        IamInstanceProfile:
-          Arn: !GetAtt InstanceProfile.Arn
-        SecurityGroupIds:
-          - !Ref EC2SecurityGroup
-        UserData:
-          Fn::Base64: !Sub |
-            #!/bin/bash
-            sudo yum update -y
-            sudo yum install -y httpd
-            sudo systemctl start httpd
-            sudo systemctl enable httpd
-
-  AutoScalingGroup:
-    Type: AWS::AutoScaling::AutoScalingGroup
-    Properties:
-      VPCZoneIdentifier:
-        - !Ref PrivateSubnet
-      MinSize: '1'
-      MaxSize: '3'
-      TargetGroupARNs:
-        - !Ref ALBTargetGroup
-      LaunchTemplate:
-        LaunchTemplateId: !Ref LaunchTemplate
-        Version: !GetAtt LaunchTemplate.LatestVersionNumber
-
-  # --- DynamoDB Table ---
-  ECommerceDynamoDB:
+  DynamoDBTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: ECommerceOrders
+      TableName: ecom-prod-dynamodb
       AttributeDefinitions:
-        - AttributeName: OrderID
+        - AttributeName: id
           AttributeType: S
       KeySchema:
-        - AttributeName: OrderID
+        - AttributeName: id
           KeyType: HASH
       BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
 
-  # --- CloudWatch Alarms ---
-  AlarmNotificationTopic:
-    Type: AWS::SNS::Topic
-
-  AlarmSubscription:
-    Type: AWS::SNS::Subscription
+  VPCDynamoDBEndpoint:
+    Type: AWS::EC2::VPCEndpoint
     Properties:
-      Protocol: email
-      Endpoint: 22ug2-0179G@sltc.edu.lk
-      TopicArn: !Ref AlarmNotificationTopic
+      VpcId: !Ref VPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.dynamodb"
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
 
 Outputs:
-  LoadBalancerDNSName:
-    Description: ALB DNS Name
-    Value: !GetAtt ApplicationLoadBalancer.DNSName
+  ALBURL:
+    Description: Application Load Balancer URL
+    Value: !GetAtt ALB.DNSName
+  DynamoDBTableName:
+    Description: Name of the DynamoDB Table
+    Value: ecom-prod-dynamodb
