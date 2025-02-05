@@ -174,7 +174,7 @@ Resources:
       SecurityGroupIds:
         - !Ref SecurityGroup
       SubnetId: !Ref PrivateSubnet1
-      ImageId: ami-04b4f1a9cf54c11d0
+      ImageId: ImageId: !Sub "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64}}"
       KeyName: ecom
       IamInstanceProfile: !Ref InstanceProfile
       Tags:
